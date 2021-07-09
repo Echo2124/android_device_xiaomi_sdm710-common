@@ -42,12 +42,25 @@ on early-init
     chown root system /dev/kmsg
     chmod 0620 /dev/kmsg
 
+on init
+    # Create cgroup mount point for memory
+    mkdir /sys/fs/cgroup/memory/bg 0750 root system
+    write /sys/fs/cgroup/memory/bg/memory.swappiness 140
+    write /sys/fs/cgroup/memory/bg/memory.move_charge_at_immigrate 1
+    chown root system /sys/fs/cgroup/memory/bg/tasks
+    chmod 0660 /sys/fs/cgroup/memory/bg/tasks
+
+    # ZRAM setup
+    write /sys/block/zram0/comp_algorithm lz4
+    write /proc/sys/vm/page-cluster 0
+
 on fs
     wait /dev/block/platform/soc/${ro.boot.bootdevice}
     symlink /dev/block/platform/soc/${ro.boot.bootdevice} /dev/block/bootdevice
     mkdir /mnt/vendor/persist 0771 root system
     mount_all /vendor/etc/fstab.qcom
     chmod 0771 /mnt/vendor/persist
+    swapon_all /vendor/etc/fstab.qcom
     restorecon_recursive /mnt/vendor/persist
     mkdir /mnt/vendor/persist/audio 0755 system system
     mkdir /mnt/vendor/persist/data 0700 system system
@@ -144,6 +157,9 @@ on boot
 
     setprop ro.telephony.call_ring.multiple false
 
+    # Remove SUID bit for iproute2 ip tool
+    chmod 0755 /system/bin/ip
+
     chmod 0444 /sys/devices/platform/msm_hsusb/gadget/usb_state
 
     # To prevent out of order acknowledgements from making
@@ -192,17 +208,8 @@ on boot
     # Create directory used for display
     mkdir /mnt/vendor/persist/display 0770 system graphics
 
-    # Enable qcrild and data services on boot so process starts in main
-    enable vendor.qcrild
-    enable vendor.qcrild2
-    enable vendor.dataqti
-    enable vendor.dataadpl
-
     # Create vpp directory
     mkdir /mnt/vendor/persist/vpp 0770 media media
-
-    # Create hvdcp_opti directory
-    mkdir /mnt/vendor/persist/hvdcp_opti 0770 root system
 
     # USB controller configuration
     setprop vendor.usb.rndis.func.name "gsi"
@@ -275,6 +282,7 @@ on post-fs-data
     mkdir /data/vendor/wifi/wigig_hostapd 0770 wifi wifi
     mkdir /data/vendor/wifi/wpa 0770 wifi wifi
     mkdir /data/vendor/wifi/wpa/sockets 0770 wifi wifi
+
 
     # Create the directories used by CnE subsystem
     mkdir /data/vendor/connectivity 0771 radio radio
@@ -371,8 +379,8 @@ on post-fs-data
     # Make MTU adjusting
     write /proc/sys/net/ipv4/tcp_mtu_probing 1
 
-    # Init sensors
-    start vendor-sensor-sh
+    start vendor.qcrild
+    start vendor.qcrild2
 
 on property:ro.vendor.iocgrp.config=1
     mkdir /dev/blkio
@@ -410,20 +418,6 @@ on property:sys.boot_completed=1
     chown media audio /sys/kernel/wcd_cpe0/fw_name
     #Reinit lmkd to reconfigure lmkd properties
     setprop lmkd.reinit 1
-
-    ## Set swap parameters and enable swapping
-    # Set compression algorithm for ZRAM to LZ4
-    write /sys/block/zram0/comp_algorithm lz4
-    # Disable swap read-ahead
-    write /proc/sys/vm/page-cluster 0
-    # Set aggressive swapping
-    write /proc/sys/vm/swappiness 100
-    # Set kswapd agressiveness to minimum
-    write /proc/sys/vm/watermark_scale_factor 1
-    # Set allocstall_threshold to 0
-    write /sys/module/vmpressure/parameters/allocstall_threshold 0
-    # Enable swap
-    swapon_all /vendor/etc/fstab.qcom
 
     start qcom-post-boot
 
@@ -562,6 +556,10 @@ service vendor.power /vendor/bin/hw/android.hardware.power-service-qti
     user system
     group system input
 
+on property:vold.decrypt=trigger_restart_framework
+    restart vendor.audio-hal-2-0
+    start vendor-sensor-sh
+
 on boot && property:persist.vendor.usb.controller.default=*
     setprop vendor.usb.controller ${persist.vendor.usb.controller.default}
 
@@ -625,3 +623,7 @@ on property:init.svc.vendor.hwcomposer-2-3=running
 
 on property:init.svc.vendor.hwcomposer-2-3=restarting
     stop ppd
+
+on property:vold.decrypt=trigger_restart_framework && property:ro.crypto.type=block && property:persist.ppd.fde.config=0
+    setprop persist.ppd.fde.config 1
+    start ppd

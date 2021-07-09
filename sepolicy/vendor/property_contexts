@@ -34,15 +34,10 @@ ro.carrier.name            u:object_r:exported_default_prop:s0
 ro.miui.cust_variant       u:object_r:exported_default_prop:s0
 
 # Mlipay
-vendor.sys.rpmb_state      u:object_r:vendor_tee_listener_prop:s0
 persist.vendor.sys.pay.ifaa              u:object_r:vendor_tee_listener_prop:s0
-persist.vendor.sys.provision.status      u:object_r:vendor_tee_listener_prop:s0
 
 # NFC
 persist.nfc.               u:object_r:nfc_prop:s0
-
-# Radio
-persist.vendor.data.qmipriod_load        u:object_r:vendor_radio_prop:s0
 
 # Recovery
 ro.build.expect.           u:object_r:exported_default_prop:s0

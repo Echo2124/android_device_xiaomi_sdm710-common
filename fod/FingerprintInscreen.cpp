@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019-2020 The LineageOS Project
+ * Copyright (C) 2019 The LineageOS Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,28 +19,26 @@
 #include "FingerprintInscreen.h"
 
 #include <android-base/logging.h>
-#include <android-base/parseint.h>
-#include <android-base/properties.h>
-#include <android-base/strings.h>
 
 #include <cmath>
 #include <fstream>
+#include <thread>
+
+#include <fcntl.h>
+#include <poll.h>
+#include <sys/stat.h>
+
+#define FINGERPRINT_ACQUIRED_VENDOR 6
 
 #define COMMAND_NIT 10
-#define PARAM_NIT_630_FOD 1
+#define PARAM_NIT_FOD 1
 #define PARAM_NIT_NONE 0
-
-#define DISPPARAM_PATH "/sys/devices/platform/soc/ae00000.qcom,mdss_mdp/drm/card0/card0-DSI-1/disp_param"
-#define DISPPARAM_HBM_FOD_ON "0x20000"
-#define DISPPARAM_HBM_FOD_OFF "0xE0000"
 
 #define FOD_STATUS_PATH "/sys/devices/virtual/touch/tp_dev/fod_status"
 #define FOD_STATUS_ON 1
 #define FOD_STATUS_OFF 0
 
-#define FOD_DEFAULT_X 445
-#define FOD_DEFAULT_Y 1910
-#define FOD_DEFAULT_SIZE 190
+#define FOD_UI_PATH "/sys/devices/platform/soc/soc:qcom,dsi-display-primary/fod_ui"
 
 namespace {
 
@@ -50,39 +48,23 @@ static void set(const std::string& path, const T& value) {
     file << value;
 }
 
-static std::vector<std::string> GetListProperty(const std::string& key)
-{
-    return android::base::Split(android::base::GetProperty(key, ""), ",");
-}
+static bool readBool(int fd) {
+    char c;
+    int rc;
 
-template <typename T>
-static std::vector<T> GetIntListProperty(const std::string& key,
-                                         const std::vector<T> default_values,
-                                         T min = std::numeric_limits<T>::min(),
-                                         T max = std::numeric_limits<T>::max())
-{
-    std::vector<std::string> strings = GetListProperty(key);
-    std::vector<std::string>::const_iterator it;
-    std::vector<T> values;
-    T value;
-
-    if (strings.size() != default_values.size())
-            goto unexpected;
-
-    for (it = strings.begin(); it != strings.end(); it++) {
-        if (!android::base::ParseInt(*it, &value, min, max))
-                goto unexpected;
-
-        values.push_back(value);
+    rc = lseek(fd, 0, SEEK_SET);
+    if (rc) {
+        LOG(ERROR) << "failed to seek fd, err: " << rc;
+        return false;
     }
 
-    return values;
+    rc = read(fd, &c, sizeof(char));
+    if (rc != 1) {
+        LOG(ERROR) << "failed to read bool from fd, err: " << rc;
+        return false;
+    }
 
-unexpected:
-    LOG(WARNING) << "property '" << key
-                 << "' does not exist or has an unexpected value\n";
-
-    return default_values;
+    return c != '0';
 }
 
 }  // anonymous namespace
@@ -98,33 +80,42 @@ namespace implementation {
 FingerprintInscreen::FingerprintInscreen() {
     xiaomiFingerprintService = IXiaomiFingerprint::getService();
 
-    std::vector<int32_t> ints { FOD_DEFAULT_X, FOD_DEFAULT_Y };
+    std::thread([this]() {
+        int fd = open(FOD_UI_PATH, O_RDONLY);
+        if (fd < 0) {
+            LOG(ERROR) << "failed to open fd, err: " << fd;
+            return;
+        }
 
-    ints = GetIntListProperty("persist.vendor.sys.fp.fod.location.X_Y", ints);
-    fodPosX = ints[0];
-    fodPosY = ints[1];
+        struct pollfd fodUiPoll = {
+            .fd = fd,
+            .events = POLLERR | POLLPRI,
+            .revents = 0,
+        };
 
-    ints = { FOD_DEFAULT_SIZE, FOD_DEFAULT_SIZE };
-    ints = GetIntListProperty("persist.vendor.sys.fp.fod.size.width_height", ints);
-    if (ints[0] != ints[1])
-           LOG(WARNING) << "FoD size should be square but it is not (width = "
-                        << ints[0] << ", height = " << ints[1] << "\n";
-    fodSize = std::max(ints[0], ints[1]);
+        while (true) {
+            int rc = poll(&fodUiPoll, 1, -1);
+            if (rc < 0) {
+                LOG(ERROR) << "failed to poll fd, err: " << rc;
+                continue;
+            }
 
-    LOG(INFO) << "FoD is located at " << fodPosX << "," << fodPosY
-              << " with size " << fodSize << "pixels\n";
+            xiaomiFingerprintService->extCmd(COMMAND_NIT,
+                    readBool(fd) ? PARAM_NIT_FOD : PARAM_NIT_NONE);
+        }
+    }).detach();
 }
 
 Return<int32_t> FingerprintInscreen::getPositionX() {
-    return fodPosX;
+    return FOD_POS_X;
 }
 
 Return<int32_t> FingerprintInscreen::getPositionY() {
-    return fodPosY;
+    return FOD_POS_Y;
 }
 
 Return<int32_t> FingerprintInscreen::getSize() {
-    return fodSize;
+    return FOD_SIZE;
 }
 
 Return<void> FingerprintInscreen::onStartEnroll() {
@@ -136,14 +127,10 @@ Return<void> FingerprintInscreen::onFinishEnroll() {
 }
 
 Return<void> FingerprintInscreen::onPress() {
-    set(DISPPARAM_PATH, DISPPARAM_HBM_FOD_ON);
-    xiaomiFingerprintService->extCmd(COMMAND_NIT, PARAM_NIT_630_FOD);
     return Void();
 }
 
 Return<void> FingerprintInscreen::onRelease() {
-    set(DISPPARAM_PATH, DISPPARAM_HBM_FOD_OFF);
-    xiaomiFingerprintService->extCmd(COMMAND_NIT, PARAM_NIT_NONE);
     return Void();
 }
 
@@ -158,12 +145,34 @@ Return<void> FingerprintInscreen::onHideFODView() {
 }
 
 Return<bool> FingerprintInscreen::handleAcquired(int32_t acquiredInfo, int32_t vendorCode) {
-    LOG(ERROR) << "acquiredInfo: " << acquiredInfo << ", vendorCode: " << vendorCode << "\n";
+    std::lock_guard<std::mutex> _lock(mCallbackLock);
+    if (mCallback == nullptr) {
+        return false;
+    }
+
+    if (acquiredInfo == FINGERPRINT_ACQUIRED_VENDOR) {
+        if (vendorCode == 22) {
+            Return<void> ret = mCallback->onFingerDown();
+            if (!ret.isOk()) {
+                LOG(ERROR) << "FingerDown() error: " << ret.description();
+            }
+            return true;
+        }
+
+        if (vendorCode == 23) {
+            Return<void> ret = mCallback->onFingerUp();
+            if (!ret.isOk()) {
+                LOG(ERROR) << "FingerUp() error: " << ret.description();
+            }
+            return true;
+        }
+    }
+
     return false;
 }
 
 Return<bool> FingerprintInscreen::handleError(int32_t error, int32_t vendorCode) {
-    LOG(ERROR) << "error: " << error << ", vendorCode: " << vendorCode << "\n";
+    LOG(ERROR) << "error: " << error << ", vendorCode: " << vendorCode;
     return false;
 }
 
@@ -171,23 +180,20 @@ Return<void> FingerprintInscreen::setLongPressEnabled(bool) {
     return Void();
 }
 
-Return<int32_t> FingerprintInscreen::getDimAmount(int32_t brightness) {
-    float alpha;
-
-    if (brightness > 62) {
-        alpha = 1.0 - pow(brightness / 255.0 * 430.0 / 600.0, 0.45);
-    } else {
-        alpha = 1.0 - pow(brightness / 200.0, 0.45);
-    }
-
-    return 255 * alpha;
+Return<int32_t> FingerprintInscreen::getDimAmount(int32_t /* brightness */) {
+    return 0;
 }
 
 Return<bool> FingerprintInscreen::shouldBoostBrightness() {
     return false;
 }
 
-Return<void> FingerprintInscreen::setCallback(const sp<IFingerprintInscreenCallback>& /* callback */) {
+Return<void> FingerprintInscreen::setCallback(const sp<IFingerprintInscreenCallback>& callback) {
+    {
+        std::lock_guard<std::mutex> _lock(mCallbackLock);
+        mCallback = callback;
+    }
+
     return Void();
 }
 

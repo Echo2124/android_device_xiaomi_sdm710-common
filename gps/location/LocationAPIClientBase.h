@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2020 The Linux Foundation. All rights reserved.
+/* Copyright (c) 2017-2019 The Linux Foundation. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are
@@ -200,11 +200,9 @@ private:
 class LocationAPIClientBase {
 public:
     LocationAPIClientBase();
+    virtual ~LocationAPIClientBase();
     LocationAPIClientBase(const LocationAPIClientBase&) = delete;
     LocationAPIClientBase& operator=(const LocationAPIClientBase&) = delete;
-
-    void destroy();
-    void onLocationApiDestroyCompleteCb();
 
     void locAPISetCallbacks(LocationCallbacks& locationCallbacks);
     void removeSession(uint32_t session);
@@ -284,9 +282,6 @@ public:
     inline virtual void onGnssNiResponseCb(LocationError /*error*/) {}
 
     inline virtual void onLocationSystemInfoCb(LocationSystemInfo /*locationSystemInfo*/) {}
-
-protected:
-    virtual ~LocationAPIClientBase();
 
 private:
     // private inner classes
@@ -493,7 +488,6 @@ private:
             for (size_t i = 0; i < count; i++) {
                 ids[i] = mAPI.mGeofenceBiDict.getId(sessions[i]);
             }
-            LOC_LOGD("%s:]Returned geofence-id: %d in add geofence", __FUNCTION__, *ids);
             mAPI.onAddGeofencesCb(count, errors, ids);
             free(ids);
         }
@@ -511,7 +505,6 @@ private:
                 for (size_t i = 0; i < count; i++) {
                     ids[i] = mRemovedGeofenceBiDict->getId(sessions[i]);
                 }
-                LOC_LOGD("%s:]Returned geofence-id: %d in remove geofence", __FUNCTION__, *ids);
                 mAPI.onRemoveGeofencesCb(count, errors, ids);
                 free(ids);
                 delete(mRemovedGeofenceBiDict);

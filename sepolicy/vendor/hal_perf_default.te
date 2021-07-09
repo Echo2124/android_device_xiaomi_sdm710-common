@@ -1,1 +1,0 @@
-allow hal_perf proc_meminfo:file r_file_perms;
